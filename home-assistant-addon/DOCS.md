@@ -4,6 +4,15 @@ This add-on provides all features of a standard, e.g. RaspberryPi, Tinkerboard o
 even virtual (e.g. OVA) based OpenCCU system to be used as a HomeMatic or
 homematicIP IoT central which is fully compatible to a CCU3 device.
 
+## Per-user Ingress login
+
+Enable `remember_ingress_users` to retain the OpenCCU WebUI session separately
+for each Home Assistant user. The add-on stores only the temporary OpenCCU SID;
+Home Assistant user IDs are hashed before they are used as file names. A normal
+OpenCCU logout or an expired session removes the stored SID. After OpenCCU is
+restarted, users must sign in again because the underlying WebUI sessions are no
+longer valid.
+
 ## Installation
 
 Follow these steps to install the add-on within your Home Assistant system:

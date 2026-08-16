@@ -24,6 +24,10 @@ backup_pre: /bin/sh -c "/bin/echo 'load tclrega.so; rega system.Save()' | /bin/t
 backup_exclude:
   - "*/tmp/.watchdog"
 timeout: 240
+options:
+  remember_ingress_users: false
+schema:
+  remember_ingress_users: bool
 devices:
   - /dev/raw-uart
   - /dev/raw-uart1

@@ -1,6 +1,7 @@
 # ChangeLog
 
 ## 0.7.0
+- add optional per-Home-Assistant-user Ingress session storage.
 - implement session id (sid) cookie-base reuse to access the openccu webui with the same session id rathern than generating a new one on each access.
 - update HA app container dependencies
 - Bump http-proxy-middleware dependency to 4.2.0

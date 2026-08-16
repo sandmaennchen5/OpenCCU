@@ -7,6 +7,10 @@
 
 ## About
 
+The optional `remember_ingress_users` setting retains the OpenCCU WebUI session
+separately for each Home Assistant user. Only the temporary OpenCCU SID is
+stored, and Home Assistant user IDs are hashed before being used as file names.
+
 ⚠️ This App does NOT provide a full OpenCCU system ⚠️
 
 It acts as a web proxy to an external running [OpenCCU](openccu) CCU instance. Thus, the sole purpose of this App is to add a OpenCCU icon to the sidebar of Home Assistant which will open the frontend of an external running OpenCCU instance so that it can be accessed from within HA.

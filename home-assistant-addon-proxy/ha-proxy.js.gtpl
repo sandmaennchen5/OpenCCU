@@ -11,17 +11,36 @@
 // v1.0: initial version
 // v1.1: adapted to http-proxy-middleware v3
 // v1.2: implement session sid cookie storage
+// v1.3: add optional per-Home-Assistant-user session storage
 //
 
 const express = require('express');
 const { createProxyMiddleware, responseInterceptor } = require('http-proxy-middleware');
 const ipaddr = require('ipaddr.js');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 // increase default listener limit
 require('events').EventEmitter.defaultMaxListeners = 40;
 
 const REQUEST_TIMEOUT = 20 * 60 * 1000; // 20 min
 const SID_COOKIE = 'openccu_ingress_sid';
+const SESSION_DIRECTORY = process.env.HM_INGRESS_SESSION_DIR || '/data/ingress-sessions';
+
+function rememberIngressUsersEnabled() {
+  if(typeof(process.env.HM_REMEMBER_INGRESS_USERS) === 'string') {
+    return /^(1|true|yes|on)$/i.test(process.env.HM_REMEMBER_INGRESS_USERS);
+  }
+  try {
+    return JSON.parse(fs.readFileSync('/data/options.json', 'utf8')).remember_ingress_users === true;
+  } catch(error) {
+    return false;
+  }
+}
+
+const REMEMBER_INGRESS_USERS = rememberIngressUsersEnabled();
+console.log(`Per-user Home Assistant ingress session storage ${REMEMBER_INGRESS_USERS ? 'enabled' : 'disabled'}.`);
 
 function parseCookies(header) {
   return Object.fromEntries((header || '').split(';').flatMap(cookie => {
@@ -48,6 +67,53 @@ function clearSidCookie(res, ingressPath) {
   res.append('Set-Cookie', sidCookie('', ingressPath, true));
 }
 
+function sessionFile(req) {
+  if(!REMEMBER_INGRESS_USERS) return null;
+  const userId = req.headers['x-remote-user-id'];
+  if(typeof(userId) !== 'string' || userId.length === 0) return null;
+  const digest = crypto.createHash('sha256').update(userId).digest('hex');
+  return path.join(SESSION_DIRECTORY, `${digest}.json`);
+}
+
+function readUserSid(req) {
+  const file = sessionFile(req);
+  if(!file) return null;
+  try {
+    const sid = JSON.parse(fs.readFileSync(file, 'utf8')).sid;
+    return validSid(sid) ? sid : null;
+  } catch(error) {
+    return null;
+  }
+}
+
+function writeUserSid(req, sid) {
+  const file = sessionFile(req);
+  if(!file || !validSid(sid)) return;
+  try {
+    fs.mkdirSync(SESSION_DIRECTORY, { recursive: true, mode: 0o700 });
+    const temporary = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({ sid }), { mode: 0o600 });
+    fs.renameSync(temporary, file);
+  } catch(error) {
+    console.error(`Unable to store per-user ingress session: ${error.message}`);
+  }
+}
+
+function deleteUserSid(req) {
+  const file = sessionFile(req);
+  if(!file) return;
+  try {
+    fs.rmSync(file, { force: true });
+  } catch(error) {
+    console.error(`Unable to remove per-user ingress session: ${error.message}`);
+  }
+}
+
+function rememberedSid(req) {
+  if(REMEMBER_INGRESS_USERS) return readUserSid(req);
+  return parseCookies(req.headers.cookie)[SID_COOKIE];
+}
+
 function isIngressIndexPath(path) {
   return path.endsWith('/index.htm');
 }
@@ -72,15 +138,16 @@ const apiProxy = createProxyMiddleware({
   on: {
     proxyRes: responseInterceptor(async (responseBody, proxyRes, req, res) => {
       const ingressPath = req.headers['x-ingress-path'] || '/';
-      const rememberedSid = parseCookies(req.headers.cookie)[SID_COOKIE];
+      const savedSid = rememberedSid(req);
       const querySid = req.query.sid;
 
       if(proxyRes.statusCode === 500 &&
          isIngressIndexPath(req.path) &&
          validSid(querySid) &&
-         validSid(rememberedSid) &&
-         querySid === rememberedSid) {
-        clearSidCookie(res, ingressPath);
+         validSid(savedSid) &&
+         querySid === savedSid) {
+        if(REMEMBER_INGRESS_USERS) deleteUserSid(req);
+        else clearSidCookie(res, ingressPath);
         res.statusCode = 302;
         res.setHeader('location', `${ingressPath}${removeSidFromUrl(req.originalUrl)}`);
         return '';
@@ -153,22 +220,25 @@ app.use((req, res, next) => {
   const isLogout = req.path === '/logout.htm';
 
   if(isLogout) {
-    clearSidCookie(res, ingressPath);
+    if(REMEMBER_INGRESS_USERS) deleteUserSid(req);
+    else clearSidCookie(res, ingressPath);
     return next();
   }
 
-  const rememberedSid = parseCookies(req.headers.cookie)[SID_COOKIE];
+  const savedSid = rememberedSid(req);
   if(validSid(req.query.sid)) {
-    if(!validSid(rememberedSid) || rememberedSid === req.query.sid) {
+    if(REMEMBER_INGRESS_USERS) {
+      if(savedSid !== req.query.sid) writeUserSid(req, req.query.sid);
+    } else if(!validSid(savedSid) || savedSid === req.query.sid) {
       res.append('Set-Cookie', sidCookie(req.query.sid, ingressPath));
     }
     return next();
   }
 
-  if(isIngressIndexPath(req.path) && validSid(rememberedSid)) {
+  if(isIngressIndexPath(req.path) && validSid(savedSid)) {
     const originalUrlWithoutSid = removeSidFromUrl(req.originalUrl);
     const querySeparator = originalUrlWithoutSid.includes('?') ? '&' : '?';
-    return res.redirect(302, `${ingressPath}${originalUrlWithoutSid}${querySeparator}sid=${encodeURIComponent(rememberedSid)}`);
+    return res.redirect(302, `${ingressPath}${originalUrlWithoutSid}${querySeparator}sid=${encodeURIComponent(savedSid)}`);
   }
 
   next();

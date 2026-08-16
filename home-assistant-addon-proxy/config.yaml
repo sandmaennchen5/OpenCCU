@@ -18,7 +18,9 @@ init: false
 timeout: 30
 options:
   webui-url: http://openccu
+  remember_ingress_users: false
 schema:
   webui-url: str?
+  remember_ingress_users: bool
 environment:
   HM_HAPROXY_SRC: 172.30.32.2/32

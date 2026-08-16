@@ -1,4 +1,9 @@
 ---
+configuration:
+  remember_ingress_users:
+    name: Save Ingress login for each Home Assistant user
+    description: >-
+      Remember the OpenCCU WebUI session separately for each Home Assistant user.
 network:
   22/tcp: SSH external port mapping
   80/tcp: WebUI HTTP external port mapping
