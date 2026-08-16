@@ -10,6 +10,11 @@
 The optional `remember_ingress_users` setting retains the OpenCCU WebUI session
 separately for each Home Assistant user. Only the temporary OpenCCU SID is
 stored, and Home Assistant user IDs are hashed before being used as file names.
+`ingress_keepalive_interval` controls the renewal interval in seconds (default
+250, allowed range 1–599) and must be lower than OpenCCU's WebUI session timeout.
+Only the existing SID is stored and renewed; OpenCCU credentials are not stored.
+After OpenCCU/ReGa restarts, or whenever OpenCCU otherwise invalidates the SID,
+each Home Assistant user must sign in to OpenCCU again.
 
 ⚠️ This App does NOT provide a full OpenCCU system ⚠️
 

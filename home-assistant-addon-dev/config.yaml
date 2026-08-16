@@ -27,8 +27,10 @@ backup_exclude:
 timeout: 240
 options:
   remember_ingress_users: false
+  ingress_keepalive_interval: 250
 schema:
   remember_ingress_users: bool
+  ingress_keepalive_interval: int(1,599)
 devices:
   - /dev/raw-uart
   - /dev/raw-uart1

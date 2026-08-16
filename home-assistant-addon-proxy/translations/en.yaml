@@ -7,4 +7,8 @@ configuration:
   remember_ingress_users:
     name: Save Ingress login for each Home Assistant user
     description: >-
-      Remember the OpenCCU WebUI session separately for each Home Assistant user.
+      Remember the OpenCCU WebUI session separately for each Home Assistant user. A new login is required after OpenCCU/ReGa restarts or invalidates the SID.
+  ingress_keepalive_interval:
+    name: Ingress session keep-alive interval
+    description: >-
+      Seconds between session keep-alive requests. Must be lower than the OpenCCU WebUI session timeout. Keep-alive cannot perform a new login after the SID becomes invalid.

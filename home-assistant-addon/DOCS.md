@@ -13,6 +13,16 @@ OpenCCU logout or an expired session removes the stored SID. After OpenCCU is
 restarted, users must sign in again because the underlying WebUI sessions are no
 longer valid.
 
+`ingress_keepalive_interval` controls how often the stored sessions are renewed
+and defaults to 250 seconds. It accepts values from 1 to 599 seconds and must be
+set lower than the Session Timeout configured in the OpenCCU WebUI. Keep-alive
+requests are sent only while `remember_ingress_users` is enabled.
+
+This feature stores and renews only an existing OpenCCU SID. It does not store
+the OpenCCU username or password and therefore cannot perform a new login. Each
+Home Assistant user must sign in to OpenCCU again after OpenCCU/ReGa restarts or
+whenever OpenCCU otherwise invalidates the stored SID.
+
 ## Installation
 
 Follow these steps to install the add-on within your Home Assistant system:

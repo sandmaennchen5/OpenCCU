@@ -19,6 +19,8 @@ const { createProxyMiddleware, responseInterceptor } = require('http-proxy-middl
 const ipaddr = require('ipaddr.js');
 const crypto = require('crypto');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const path = require('path');
 
 // increase default listener limit
@@ -27,19 +29,24 @@ require('events').EventEmitter.defaultMaxListeners = 40;
 const REQUEST_TIMEOUT = 20 * 60 * 1000; // 20 min
 const SID_COOKIE = 'openccu_ingress_sid';
 const SESSION_DIRECTORY = process.env.HM_INGRESS_SESSION_DIR || '/data/ingress-sessions';
+const UPSTREAM_URL = '{{ index . "webui-url" }}';
 
-function rememberIngressUsersEnabled() {
-  if(typeof(process.env.HM_REMEMBER_INGRESS_USERS) === 'string') {
-    return /^(1|true|yes|on)$/i.test(process.env.HM_REMEMBER_INGRESS_USERS);
-  }
+function addonOptions() {
   try {
-    return JSON.parse(fs.readFileSync('/data/options.json', 'utf8')).remember_ingress_users === true;
+    return JSON.parse(fs.readFileSync('/data/options.json', 'utf8'));
   } catch(error) {
-    return false;
+    return {};
   }
 }
 
-const REMEMBER_INGRESS_USERS = rememberIngressUsersEnabled();
+const OPTIONS = addonOptions();
+const REMEMBER_INGRESS_USERS = typeof(process.env.HM_REMEMBER_INGRESS_USERS) === 'string'
+  ? /^(1|true|yes|on)$/i.test(process.env.HM_REMEMBER_INGRESS_USERS)
+  : OPTIONS.remember_ingress_users === true;
+const KEEPALIVE_INTERVAL = Number.isInteger(OPTIONS.ingress_keepalive_interval) &&
+  OPTIONS.ingress_keepalive_interval >= 1 && OPTIONS.ingress_keepalive_interval <= 599
+  ? OPTIONS.ingress_keepalive_interval
+  : 250;
 console.log(`Per-user Home Assistant ingress session storage ${REMEMBER_INGRESS_USERS ? 'enabled' : 'disabled'}.`);
 
 function parseCookies(header) {
@@ -114,6 +121,41 @@ function rememberedSid(req) {
   return parseCookies(req.headers.cookie)[SID_COOKIE];
 }
 
+function keepStoredSessionsAlive() {
+  let files;
+  try {
+    files = fs.readdirSync(SESSION_DIRECTORY).filter(file => file.endsWith('.json'));
+  } catch(error) {
+    if(error.code !== 'ENOENT') console.error(`Unable to read per-user ingress sessions: ${error.message}`);
+    return;
+  }
+
+  for(const name of files) {
+    const file = path.join(SESSION_DIRECTORY, name);
+    let sid;
+    try {
+      sid = JSON.parse(fs.readFileSync(file, 'utf8')).sid;
+    } catch(error) {}
+    if(!validSid(sid)) {
+      try { fs.rmSync(file, { force: true }); } catch(error) {}
+      continue;
+    }
+
+    const target = new URL('esp/system.htm', UPSTREAM_URL.endsWith('/') ? UPSTREAM_URL : `${UPSTREAM_URL}/`);
+    target.searchParams.set('sid', sid);
+    target.searchParams.set('action', 'keepAlive');
+    const client = target.protocol === 'https:' ? https : http;
+    const request = client.get(target, { timeout: 10000 }, response => {
+      response.resume();
+      if([302, 401, 403, 500].includes(response.statusCode)) {
+        try { fs.rmSync(file, { force: true }); } catch(error) {}
+      }
+    });
+    request.on('timeout', () => request.destroy(new Error('timeout')));
+    request.on('error', error => console.error(`OpenCCU ingress keep-alive failed: ${error.message}`));
+  }
+}
+
 function isIngressIndexPath(path) {
   return path.endsWith('/index.htm');
 }
@@ -128,7 +170,7 @@ function removeSidFromUrl(url) {
 }
 
 const apiProxy = createProxyMiddleware({
-  target: '{{ index . "webui-url" }}',
+  target: UPSTREAM_URL,
   pathFilter: '/',
   changeOrigin: true, // for vhosted sites
   //logger: console,
@@ -255,3 +297,8 @@ const server = app.listen(8099, (err) => {
 
 server.setTimeout(REQUEST_TIMEOUT);
 server.requestTimeout = REQUEST_TIMEOUT;
+
+if(REMEMBER_INGRESS_USERS) {
+  console.log(`Keeping per-user ingress sessions alive every ${KEEPALIVE_INTERVAL} seconds.`);
+  setInterval(keepStoredSessionsAlive, KEEPALIVE_INTERVAL * 1000).unref();
+}
