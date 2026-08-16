@@ -3,6 +3,7 @@
 ## 0.7.0
 - add optional per-Home-Assistant-user Ingress session storage.
 - add a configurable 1–599 second keep-alive interval (default: 250 seconds).
+- add optional encrypted per-user OpenCCU credentials for automatic re-login.
 - implement session id (sid) cookie-base reuse to access the openccu webui with the same session id rathern than generating a new one on each access.
 - update HA app container dependencies
 - Bump http-proxy-middleware dependency to 4.2.0

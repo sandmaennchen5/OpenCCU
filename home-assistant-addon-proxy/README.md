@@ -16,6 +16,14 @@ Only the existing SID is stored and renewed; OpenCCU credentials are not stored.
 After OpenCCU/ReGa restarts, or whenever OpenCCU otherwise invalidates the SID,
 each Home Assistant user must sign in to OpenCCU again.
 
+The optional `remember_ingress_credentials` setting instead encrypts and stores
+the OpenCCU username and password per Home Assistant user and performs one
+automatic login attempt after an invalid SID. It requires
+`remember_ingress_users` and is disabled by default. Because its encryption key
+is stored alongside the encrypted data, anyone who obtains all add-on data can
+recover the credentials. An explicit OpenCCU logout deletes the stored session
+and credentials for that Home Assistant user.
+
 ⚠️ This App does NOT provide a full OpenCCU system ⚠️
 
 It acts as a web proxy to an external running [OpenCCU](openccu) CCU instance. Thus, the sole purpose of this App is to add a OpenCCU icon to the sidebar of Home Assistant which will open the frontend of an external running OpenCCU instance so that it can be accessed from within HA.

@@ -23,6 +23,15 @@ the OpenCCU username or password and therefore cannot perform a new login. Each
 Home Assistant user must sign in to OpenCCU again after OpenCCU/ReGa restarts or
 whenever OpenCCU otherwise invalidates the stored SID.
 
+As an alternative, `remember_ingress_credentials` can encrypt and store the
+OpenCCU username and password for each Home Assistant user. When a stored SID is
+invalid, the existing OpenCCU login form performs one automatic login attempt.
+This option requires `remember_ingress_users` and is disabled by default. The
+encryption key and encrypted credentials are both stored in the add-on data, so
+an attacker who obtains that complete data can recover the credentials. Use it
+only on a trusted Home Assistant installation. Logging out of OpenCCU deletes
+the stored SID and credentials for that Home Assistant user.
+
 ## Installation
 
 Follow these steps to install the add-on within your Home Assistant system:
