@@ -1,0 +1,5 @@
+FROM ghcr.io/openccu/openccu:latest
+
+# Test image for ingress branches. The complete OpenCCU userspace comes from
+# the official multi-arch image; only the changed Home Assistant proxy is added.
+COPY --chmod=755 buildroot-external/overlay/base-openccu_oci/bin/ha-proxy.js /bin/ha-proxy.js
