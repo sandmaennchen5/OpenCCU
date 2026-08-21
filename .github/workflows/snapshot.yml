@@ -44,7 +44,7 @@ jobs:
       contents: read
       pull-requests: read  # mikepenz/release-changelog-builder-action
     name: Generate ChangeLog summary
-    if: ${{ github.repository == 'OpenCCU/OpenCCU' && (github.event_name != 'schedule' || needs.repo-check.outputs.has-commits > 0) }}
+    if: ${{ github.event_name != 'schedule' || needs.repo-check.outputs.has-commits > 0 }}
     runs-on: ubuntu-24.04
     needs: repo-check
 
@@ -122,7 +122,7 @@ jobs:
       id-token: write      # actions/attest-build-provenance
       attestations: write  # actions/attest-build-provenance
     name: Snapshot build [${{ matrix.platform }}]
-    if: ${{ github.repository == 'OpenCCU/OpenCCU' && (github.event_name != 'schedule' || needs.repo-check.outputs.has-commits > 0) }}
+    if: ${{ github.event_name != 'schedule' || needs.repo-check.outputs.has-commits > 0 }}
     runs-on: self-hosted
     needs: [repo-check, changelog_summary]
     timeout-minutes: 300
