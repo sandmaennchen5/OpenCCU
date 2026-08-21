@@ -1,733 +1,484 @@
-# OpenCCU Snapshot build
+# OpenCCU OCI snapshot build for GitHub-hosted runners
 # yamllint disable rule:truthy
 ---
-name: Snapshot Build
+name: Snapshot OCI Build
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # run at 0 AM UTC
   workflow_dispatch:
     inputs:
-      test_workflow:
-        description: 'Test workflow (dry-run)?'
-        required: true
-        type: 'boolean'
-        default: 'false'
       platforms:
-        description: 'List of platforms to build (comma seperated, e.g. "rpi3","rpi4")'
+        description: "OCI platform(s) to build"
         required: true
-        default: 'all'
-        type: string
+        default: "all"
+        type: choice
+        options:
+          - all
+          - oci_amd64
+          - oci_arm64
 
-# default read-only permission
 permissions:
   contents: read
 
 jobs:
-  repo-check:
-    name: Check for Changes
+  ###########################################################################
+  # Determine snapshot version once for all matrix jobs
+  ###########################################################################
+  prepare:
+    name: Prepare Build
     runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-      - id: commit-check
-        run: |
-          REF=$(git --no-pager log --no-merges --grep='snapshot bump \[' --pretty='tformat:%H' -1)
-          COUNT=$(git --no-pager log --no-merges --pretty='tformat:%s' ${REF:+$REF..}HEAD | grep -v -e '\(snapshot\|release\) bump \[' | wc -l)
-          echo "has-commits=$COUNT" >> "$GITHUB_OUTPUT"
-    outputs:
-      has-commits: ${{ steps.commit-check.outputs.has-commits }}
 
-  changelog_summary:
-    permissions:
-      contents: read
-      pull-requests: read  # mikepenz/release-changelog-builder-action
-    name: Generate ChangeLog summary
-    if: ${{ github.event_name != 'schedule' || needs.repo-check.outputs.has-commits > 0 }}
-    runs-on: ubuntu-24.04
-    needs: repo-check
+    outputs:
+      date: ${{ steps.env.outputs.date }}
+      occu_version: ${{ steps.env.outputs.occu_version }}
+      build_version: ${{ steps.env.outputs.build_version }}
+      sha7: ${{ steps.env.outputs.sha7 }}
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v4
 
-      - name: Get previous tag
-        id: previoustag
-        uses: WyriHaximus/github-action-get-previous-tag@61819f33034117e6c686e6a31dba995a85afc9de  # v2.0
-
-      - name: Generate changelog
-        id: changelog
-        uses: mikepenz/release-changelog-builder-action@c9bcd8238b6f41e05561348339429d360b1c0247  # v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          configuration: ".github/release-changelog-config.json"
-          fromTag: ${{ steps.previoustag.outputs.tag }}
-          toTag: ${{ github.sha }}
-
-      - name: Generate ChangeLog summary
+      - name: Setup Environment
+        id: env
         shell: bash
         run: |
-          CHANGE_ITEMS=$(cat <<'EOF' | sed -n 's/^[[:space:]]*[-*][[:space:]]\+//p' | sed 's/@Copilot/@jens-maus/g'
-          ${{ steps.changelog.outputs.changelog }}
-          EOF
-          )
+          DATE="$(date +%Y%m%d)"
+          OCCU_VERSION="$(
+            grep 'OCCU_VERSION =' \
+              buildroot-external/package/occu/occu.mk \
+              | cut -d' ' -f3 \
+              | cut -d'-' -f1
+          )"
+          BUILD_VERSION="${OCCU_VERSION}.${DATE}"
+          SHA7="${GITHUB_SHA::7}"
 
-          mkdir -p /tmp/changelog-summary
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "occu_version=${OCCU_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_version=${BUILD_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha7=${SHA7}" >> "$GITHUB_OUTPUT"
 
-          generate_summary() {
-            local lang="$1"
-            local outfile="$2"
-            local header_link label_changes label_fallback
-            case "${lang}" in
-              de)
-                header_link='<p><b>Zum aktuellen ChangeLog und zur Release-&Uuml;bersicht besuchen Sie:</b> <a href="https://github.com/OpenCCU/OpenCCU/releases">https://github.com/OpenCCU/OpenCCU/releases</a>.</p>'
-                label_changes='<p><b>&Auml;nderungen in dieser Version im Vergleich zur vorherigen Version:</b></p>'
-                label_fallback='Siehe Release-Seite f&uuml;r den vollst&auml;ndigen Changelog.'
-                ;;
-              *)
-                header_link='<p><b>For recent ChangeLog and Releases overview visit:</b> <a href="https://github.com/OpenCCU/OpenCCU/releases">https://github.com/OpenCCU/OpenCCU/releases</a>.</p>'
-                label_changes='<p><b>Changes in this release compared to the previous version:</b></p>'
-                label_fallback='See release page for the full changelog.'
-                ;;
-            esac
-            {
-              echo "${header_link}"
-              echo "${label_changes}"
-              echo '<ul>'
-              if [[ -n "${CHANGE_ITEMS}" ]]; then
-                printf '%s\n' "${CHANGE_ITEMS}" | python3 -c "import html,sys; [print('<li>' + html.escape(line.strip(), quote=True).encode('ascii', 'xmlcharrefreplace').decode('ascii') + '</li>') for line in sys.stdin if line.strip()]"
-              else
-                echo "<li>${label_fallback}</li>"
-              fi
-              echo '</ul>'
-              echo '<hr/>'
-            } >"${outfile}"
-          }
+          echo "DATE=${DATE}"
+          echo "OCCU_VERSION=${OCCU_VERSION}"
+          echo "BUILD_VERSION=${BUILD_VERSION}"
+          echo "SHA7=${SHA7}"
 
-          generate_summary en /tmp/changelog-summary/changelog-summary.en.html
-          generate_summary de /tmp/changelog-summary/changelog-summary.de.html
-
-      - name: Upload ChangeLog summary artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        with:
-          path: /tmp/changelog-summary/
-          name: changelog-summary
-
+  ###########################################################################
+  # Build OCI root filesystems
+  ###########################################################################
   build:
-    permissions:
-      contents: write      # actions/upload-artifact
-      id-token: write      # actions/attest-build-provenance
-      attestations: write  # actions/attest-build-provenance
     name: Snapshot build [${{ matrix.platform }}]
-    if: ${{ github.event_name != 'schedule' || needs.repo-check.outputs.has-commits > 0 }}
+
     runs-on: ubuntu-24.04
-    needs: [repo-check, changelog_summary]
+
+    needs:
+      - prepare
+
     timeout-minutes: 300
-    outputs:
-      build_datetime: ${{ steps.env.outputs.build_datetime }}
-      build_version: ${{ steps.env.outputs.build_version }}
+
+    permissions:
+      contents: read
 
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(format('[{0}]', (github.event.inputs.platforms == '' || github.event.inputs.platforms == 'all') && '"rpi3","rpi4","rpi5","odroid-c2","odroid-c4","odroid-n2","tinkerboard2","ova","oci_amd64","oci_arm64","generic-x86_64","generic-aarch64","lxc_amd64","lxc_arm64"' || github.event.inputs.platforms)) }}
+        platform: ${{ fromJSON(
+          github.event.inputs.platforms == 'all'
+          && '["oci_amd64","oci_arm64"]'
+          || format('["{0}"]', github.event.inputs.platforms)
+          ) }}
 
     steps:
+      #######################################################################
+      # Checkout
+      #######################################################################
       - name: Checkout Code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        uses: actions/checkout@v4
 
-      - name: Install Dependencies
-        run: |
-          if ! dpkg-query -l wget bc cpio rsync zip python3 file >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends wget bc cpio rsync zip python3 file
-          fi
-
-          if ! getent group builder >/dev/null; then
-            sudo groupadd -g 48 builder
-          fi
-
-          if ! id builder >/dev/null 2>&1; then
-            sudo useradd -m -u 1003 -g 48 -G sudo builder
-          fi
-
-          if ! sudo grep -q '^builder ' /etc/sudoers; then
-            echo "builder ALL=(ALL:ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers >/dev/null
-          fi
-
-          sudo chown -R builder:builder /home/builder
-
-      - name: Setup Environment
-        id: env
-        run: |
-          echo "DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
-          echo "OCCU_VERSION=$(grep 'OCCU_VERSION =' buildroot-external/package/occu/occu.mk | cut -d' ' -f3 | cut -d'-' -f1)" >> $GITHUB_ENV
-          echo "VERSION=$(grep 'OCCU_VERSION =' buildroot-external/package/occu/occu.mk | cut -d' ' -f3 | cut -d'-' -f1).$(date +%Y%m%d)" >> $GITHUB_ENV
-          echo "GITHUB_SHA7=$(echo ${GITHUB_SHA::7})" >> $GITHUB_ENV
-          if [[ "${{ github.event.inputs.test_workflow }}" == "true" ]]; then
-            echo "FAKE_BUILD=true" >> $GITHUB_ENV
-          else
-            echo "FAKE_BUILD=" >> $GITHUB_ENV
-          fi
-          JLEVEL=0
-          if [[ -f /sys/fs/cgroup/cpu.max ]]; then # cgroups v2
-            CPU_QUOTA=$(cut -d ' ' -f1 /sys/fs/cgroup/cpu.max)
-            if [[ "${CPU_QUOTA}" != "max" ]]; then
-              CPU_PERIOD=$(cut -d ' ' -f2 /sys/fs/cgroup/cpu.max)
-              JLEVEL=$((CPU_QUOTA / CPU_PERIOD + 1))
-            fi
-          elif [[ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]]; then # cgroups v1
-            CPU_QUOTA=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)
-            if [[ "${CPU_QUOTA}" != "-1" ]]; then
-              CPU_PERIOD=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)
-              JLEVEL=$((CPU_QUOTA / CPU_PERIOD + 1))
-            fi
-          fi
-          echo "JLEVEL=${JLEVEL}" >> $GITHUB_ENV
-          echo "build_datetime=$(date -u +'%FT%T.%3NZ')" >> $GITHUB_OUTPUT
-          echo "build_version=$(grep 'OCCU_VERSION =' buildroot-external/package/occu/occu.mk | cut -d' ' -f3 | cut -d'-' -f1).$(date +%Y%m%d)" >> $GITHUB_OUTPUT
-
-      - name: Switch to experimental EULA files
-        run: |
-          mv -f release/updatepkg/${{ matrix.platform }}/EULA.de_nightly release/updatepkg/${{ matrix.platform }}/EULA.de
-          mv -f release/updatepkg/${{ matrix.platform }}/EULA.en_nightly release/updatepkg/${{ matrix.platform }}/EULA.en
-
-      - name: Download ChangeLog summary artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-        with:
-          name: changelog-summary
-          path: /tmp/changelog-summary
-
-      - name: Inject ChangeLog summary into EULA files
+      #######################################################################
+      # Free some disk space
+      #######################################################################
+      - name: Free Disk Space
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
+          echo "Disk usage before cleanup:"
+          df -h
 
-          summary_dir = Path("/tmp/changelog-summary")
-          begin_marker = b"<!-- OPENCCU_CHANGELOG_BEGIN -->"
-          end_marker   = b"<!-- OPENCCU_CHANGELOG_END -->"
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
 
-          def get_fragment(eula_path: Path) -> bytes:
-              """Return the locale-appropriate summary fragment, falling back to English."""
-              # EULA.de, EULA.de_nightly → locale "de"; EULA.en, EULA.en_nightly → locale "en"
-              suffix = eula_path.name.split(".", 1)[1] if "." in eula_path.name else "en"
-              locale = suffix.split("_")[0]
-              locale_file = summary_dir / f"changelog-summary.{locale}.html"
-              if locale_file.exists():
-                  return locale_file.read_bytes()
-              # Fallback to English
-              return (summary_dir / "changelog-summary.en.html").read_bytes()
+          sudo apt-get clean
 
-          for eula in Path("release/updatepkg").glob("*/EULA.*"):
-            content = eula.read_bytes()
-            fragment = get_fragment(eula)
-            if begin_marker in content and end_marker in content:
-              # Replace only the content between the existing markers, in-place.
-              start = content.index(begin_marker) + len(begin_marker)
-              end   = content.index(end_marker)
-              content = content[:start] + b"\n" + fragment + b"\n" + content[end:]
-              eula.write_bytes(content)
-            else:
-              # Fallback for files that don't yet carry the markers.
-              marker = b"</body>"
-              if marker not in content:
-                raise RuntimeError(
-                  f"Could not find OPENCCU_CHANGELOG markers or </body> in {eula}"
-                )
-              section = begin_marker + b"\n" + fragment + b"\n" + end_marker
-              eula.write_bytes(content.replace(marker, section + b"\n" + marker, 1))
-          PY
+          echo "Disk usage after cleanup:"
+          df -h
 
-      # - name: remote debug tmate session
-      #   uses: mxschmitt/action-tmate@v1
-      #   if: matrix.platform == 'ova'
+      #######################################################################
+      # Install dependencies
+      #######################################################################
+      - name: Install Dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
 
-      # major build step
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            gcc \
+            g++ \
+            make \
+            git \
+            wget \
+            curl \
+            bc \
+            cpio \
+            rsync \
+            unzip \
+            zip \
+            python3 \
+            file \
+            jq \
+            perl \
+            patch \
+            diffutils \
+            bzip2 \
+            gzip \
+            xz-utils \
+            tar \
+            libncurses-dev \
+            ca-certificates
+
+      #######################################################################
+      # Prepare paths expected by the OpenCCU Makefile
+      #
+      # Upstream uses:
+      #   /mnt/download
+      #   /mnt/ccache/<platform>
+      #
+      # These directories don't exist on GitHub-hosted runners and cannot
+      # normally be created by the unprivileged runner user.
+      #######################################################################
+      - name: Prepare Build Directories
+        shell: bash
+        run: |
+          sudo mkdir -p /mnt/download
+          sudo mkdir -p "/mnt/ccache/${{ matrix.platform }}"
+
+          sudo chown -R "$(id -u):$(id -g)" /mnt/download
+          sudo chown -R "$(id -u):$(id -g)" /mnt/ccache
+
+          chmod -R u+rwX /mnt/download
+          chmod -R u+rwX /mnt/ccache
+
+          ls -ld /mnt/download
+          ls -ld /mnt/ccache
+          ls -ld "/mnt/ccache/${{ matrix.platform }}"
+
+      #######################################################################
+      # Environment
+      #######################################################################
+      - name: Setup Build Environment
+        shell: bash
+        run: |
+          echo "DATE=${{ needs.prepare.outputs.date }}" >> "$GITHUB_ENV"
+          echo "OCCU_VERSION=${{ needs.prepare.outputs.occu_version }}" >> "$GITHUB_ENV"
+          echo "VERSION=${{ needs.prepare.outputs.build_version }}" >> "$GITHUB_ENV"
+          echo "GITHUB_SHA7=${{ needs.prepare.outputs.sha7 }}" >> "$GITHUB_ENV"
+
+          JLEVEL=0
+
+          if [[ -f /sys/fs/cgroup/cpu.max ]]; then
+            CPU_QUOTA="$(cut -d ' ' -f1 /sys/fs/cgroup/cpu.max)"
+
+            if [[ "${CPU_QUOTA}" != "max" ]]; then
+              CPU_PERIOD="$(cut -d ' ' -f2 /sys/fs/cgroup/cpu.max)"
+              JLEVEL=$((CPU_QUOTA / CPU_PERIOD + 1))
+            fi
+          elif [[ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]]; then
+            CPU_QUOTA="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)"
+
+            if [[ "${CPU_QUOTA}" != "-1" ]]; then
+              CPU_PERIOD="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)"
+              JLEVEL=$((CPU_QUOTA / CPU_PERIOD + 1))
+            fi
+          fi
+
+          # If GitHub doesn't expose a CPU quota, let make/Buildroot decide.
+          echo "JLEVEL=${JLEVEL}" >> "$GITHUB_ENV"
+
+          echo "DATE=${{ needs.prepare.outputs.date }}"
+          echo "VERSION=${{ needs.prepare.outputs.build_version }}"
+          echo "JLEVEL=${JLEVEL}"
+
+      #######################################################################
+      # Snapshot EULA
+      #######################################################################
+      - name: Switch to Snapshot EULA Files
+        shell: bash
+        run: |
+          if [[ -f "release/updatepkg/${{ matrix.platform }}/EULA.de_nightly" ]]; then
+            cp -f \
+              "release/updatepkg/${{ matrix.platform }}/EULA.de_nightly" \
+              "release/updatepkg/${{ matrix.platform }}/EULA.de"
+          fi
+
+          if [[ -f "release/updatepkg/${{ matrix.platform }}/EULA.en_nightly" ]]; then
+            cp -f \
+              "release/updatepkg/${{ matrix.platform }}/EULA.en_nightly" \
+              "release/updatepkg/${{ matrix.platform }}/EULA.en"
+          fi
+
+      #######################################################################
+      # Main OpenCCU / Buildroot build
+      #######################################################################
       - name: Build
         timeout-minutes: 300
         shell: bash
         run: |
           rm -rf release/OpenCCU-* buildroot-????.*
-          sudo chown -R builder:builder "$GITHUB_WORKSPACE"
-          sudo -H -E -u builder nice -n 19 make DATE=${{ env.DATE }} BR2_DL_DIR=/mnt/download BR2_CCACHE_DIR=/mnt/ccache/${{ matrix.platform }} BR2_JLEVEL=${{ env.JLEVEL }} PRODUCT=${{ matrix.platform }} clean-all release
-          mv release/OpenCCU-${{ env.VERSION }}-${{ matrix.platform }}.mf release/OpenCCU-${{ env.VERSION }}-${{ env.GITHUB_SHA7 }}-${{ matrix.platform }}.mf
 
-      # check linux kernel config consistency
-      - name: Check Linux Kconfig
-        if: |
-          github.event.inputs.test_workflow != 'true' &&
-          !startsWith(matrix.platform, 'oci_') &&
-          !startsWith(matrix.platform, 'lxc_')
+          make \
+            DATE="${DATE}" \
+            BR2_DL_DIR=/mnt/download \
+            BR2_CCACHE_DIR="/mnt/ccache/${{ matrix.platform }}" \
+            BR2_JLEVEL="${JLEVEL}" \
+            PRODUCT="${{ matrix.platform }}" \
+            clean-all \
+            release
+
+      #######################################################################
+      # Show resulting files
+      #######################################################################
+      - name: Show Build Results
+        shell: bash
         run: |
-          sudo -H -E -u builder nice -n 19 make DATE=${{ env.DATE }} BR2_DL_DIR=/mnt/download BR2_CCACHE_DIR=/mnt/ccache/${{ matrix.platform }} BR2_JLEVEL=${{ env.JLEVEL }} PRODUCT=${{ matrix.platform }} linux-check-dotconfig
+          echo "Release directory:"
+          ls -lah release/
 
-      # cleanup
-      - name: Cleanup
-        run: |
-          sudo -H -E -u builder make clean-all
-          rm -rf release/*.img* buildroot-????.*
+          echo
+          echo "Expected OCI archive:"
+          ls -lah \
+            "release/OpenCCU-${VERSION}-${{ matrix.platform }}.tgz"
 
-      #######################
-      # nightly snapshot uploads
-      - name: Upload build snapshot [rpi*, odroid-c2, odroid-c4, odroid-n2, tinkerboard2, ova, generic-*]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          !startsWith(matrix.platform, 'oci_') &&
-          !startsWith(matrix.platform, 'lxc_')
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
+      #######################################################################
+      # Upload OCI rootfs as Actions artifact
+      #######################################################################
+      - name: Upload OCI Artifact
+        uses: actions/upload-artifact@v4
         with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}-${{ matrix.platform }}.zip
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$-${{ matrix.platform }}.zip
-          asset_content_type: application/zip
-          max_releases: 1
+          name: OpenCCU-${{ needs.prepare.outputs.build_version }}-${{ matrix.platform }}
+          path: |
+            release/OpenCCU-${{ needs.prepare.outputs.build_version }}-${{ matrix.platform }}.tgz
+            release/OpenCCU-${{ needs.prepare.outputs.build_version }}-${{ matrix.platform }}.tgz.sha256
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Upload build snapshot checksum [rpi*, odroid-c2, odroid-c4, odroid-n2, tinkerboard2, ova, generic-*]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          !startsWith(matrix.platform, 'oci_') &&
-          !startsWith(matrix.platform, 'lxc_')
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
-        with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}-${{ matrix.platform }}.zip.sha256
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$-${{ matrix.platform }}.zip.sha256
-          asset_content_type: text/plain
-          max_releases: 1
-
-      - name: Upload build snapshot [ccu3]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          matrix.platform == 'rpi3'
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
-        with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}-ccu3.tgz
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$-ccu3.tgz
-          asset_content_type: application/gzip
-          max_releases: 1
-
-      - name: Upload build snapshot checksum [ccu3]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          matrix.platform == 'rpi3'
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
-        with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}-ccu3.tgz.sha256
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$-ccu3.tgz.sha256
-          asset_content_type: text/plain
-          max_releases: 1
-
-      - name: Upload build snapshot [ova]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          matrix.platform == 'ova'
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
-        with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}.ova
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$.ova
-          asset_content_type: application/gzip
-          max_releases: 1
-
-      - name: Upload build snapshot checksum [ova]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          matrix.platform == 'ova'
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
-        with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}.ova.sha256
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$.ova.sha256
-          asset_content_type: text/plain
-          max_releases: 1
-
-      - name: Upload build snapshot [oci]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          startsWith(matrix.platform, 'oci_')
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
-        with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}-${{ matrix.platform }}.tgz
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$-${{ matrix.platform }}.tgz
-          asset_content_type: application/gzip
-          max_releases: 1
-
-      - name: Upload build snapshot checksum [oci]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          startsWith(matrix.platform, 'oci_')
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
-        with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}-${{ matrix.platform }}.tgz.sha256
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$-${{ matrix.platform }}.tgz.sha256
-          asset_content_type: text/plain
-          max_releases: 1
-
-      - name: Upload build snapshot [lxc]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          startsWith(matrix.platform, 'lxc_')
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
-        with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}-${{ matrix.platform }}.tar.xz
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$-${{ matrix.platform }}.tar.xz
-          asset_content_type: application/x-xz
-          max_releases: 1
-
-      - name: Upload build snapshot checksum [lxc]
-        if: |
-          github.repository_owner == 'OpenCCU' &&
-          startsWith(matrix.platform, 'lxc_')
-        uses: WebFreak001/deploy-nightly@46ecbabd7fad70d3e7d2c97fe8cd54e7a52e215b  # v3.2.0
-        with:
-          token: ${{ secrets.DEPLOY_TOKEN }}
-          upload_url: https://uploads.github.com/repos/OpenCCU/OpenCCU/releases/22744592/assets{?name,label}
-          release_id: 22744592
-          asset_path: release/OpenCCU-${{ env.VERSION }}-${{ matrix.platform }}.tar.xz.sha256
-          asset_name: OpenCCU-${{ env.OCCU_VERSION }}.$$-${{ matrix.platform }}.tar.xz.sha256
-          asset_content_type: text/plain
-          max_releases: 1
-
-      ########################
-      # upload build artifacts (oci only)
-      - name: Upload build artifact [oci]
-        id: upload-oci
-        if: |
-          startsWith(matrix.platform, 'oci_')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        with:
-          path: release/OpenCCU-${{ env.VERSION }}-${{ matrix.platform }}.tgz*
-          name: OpenCCU-${{ env.VERSION }}-${{ env.GITHUB_SHA7 }}-${{ matrix.platform }}.tgz
-        continue-on-error: true
-
-      - name: Attest artifact provenance [oci]
-        if: |
-          startsWith(matrix.platform, 'oci_')
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4
-        with:
-          subject-name: OpenCCU-${{ env.VERSION }}-${{ env.GITHUB_SHA7 }}-${{ matrix.platform }}.tgz
-          subject-digest: sha256:${{ steps.upload-oci.outputs.artifact-digest }}
-        continue-on-error: true
-
-      #######################
-      # manifest file artifact upload
-      - name: Upload manifest artifact
-        id: upload-manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        with:
-          path: release/OpenCCU-${{ env.VERSION }}-${{ env.GITHUB_SHA7 }}-${{ matrix.platform }}.mf
-          name: OpenCCU-${{ env.VERSION }}-${{ env.GITHUB_SHA7 }}-${{ matrix.platform }}.mf
-
-      - name: Attest artifact provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4
-        with:
-          subject-name: OpenCCU-${{ env.VERSION }}-${{ env.GITHUB_SHA7 }}-${{ matrix.platform }}.mf
-          subject-digest: sha256:${{ steps.upload-manifest.outputs.artifact-digest }}
-        continue-on-error: true
-
-  ##########################################
-  # OCI/Docker build and registry push step
+  ###########################################################################
+  # Assemble amd64 + arm64 OCI artifacts into one multi-arch container
+  ###########################################################################
   oci-multiarch-build-push:
-    permissions:
-      packages: write      # docker/build-push-action
-      artifact-metadata: write  # docker/build-push-action build record
-      id-token: write      # actions/attest-build-provenance
-      attestations: write  # actions/attest-build-provenance
-      contents: read       # actions/attest-build-provenance
-    name: OCI/Docker Build+Push
+    name: OCI Multi-Arch Build + Push
+
     runs-on: ubuntu-24.04
-    needs: build
-    if: github.event_name != 'pull_request' &&
-      ( github.event.inputs.platforms == '' ||
-        github.event.inputs.platforms == 'all' ||
-        contains(github.event.inputs.platforms, 'oci_'))
+
+    needs:
+      - prepare
+      - build
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
 
     steps:
+      #######################################################################
+      # Checkout to get the OCI Dockerfile
+      #######################################################################
       - name: Checkout Code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        uses: actions/checkout@v4
 
+      #######################################################################
+      # Utilities
+      #######################################################################
       - name: Install Dependencies
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends jq
 
-      - name: Setup Environment
-        run: |
-          echo "BUILD_DATETIME=${{ needs.build.outputs.build_datetime }}" >> $GITHUB_ENV
-          echo "BUILD_VERSION=${{ needs.build.outputs.build_version }}" >> $GITHUB_ENV
-          echo "GIT_REF=$(git symbolic-ref -q --short HEAD || git describe --tags --exact-match)" >> $GITHUB_ENV
-          echo "GITHUB_SHA7=$(echo ${GITHUB_SHA::7})" >> $GITHUB_ENV
-
-      # download OCI platform artifacts
-      - name: Download all OCI artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+      #######################################################################
+      # Download all OCI artifacts produced by matrix
+      #######################################################################
+      - name: Download OCI Artifacts
+        uses: actions/download-artifact@v4
         with:
-          pattern: OpenCCU-${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}-oci_*.tgz
+          pattern: OpenCCU-${{ needs.prepare.outputs.build_version }}-oci_*
+          path: downloaded
           merge-multiple: true
 
-      - name: Extract OCI artifacts
+      #######################################################################
+      # Convert Docker-save tar archives contained in OpenCCU tgz files
+      # to the files expected by buildroot-external/board/oci/Dockerfile
+      #######################################################################
+      - name: Extract OCI Root Filesystems
+        shell: bash
         run: |
           rm -rf oci_build
           mkdir -p oci_build
-          cd oci_build || exit 1
+
           shopt -s nullglob
-          for f in ../OpenCCU-${{ env.BUILD_VERSION }}-oci_*.tgz; do
-            echo "extracting ${f}..."
-            DIR=$(basename "${f}" .tgz)
-            mkdir -p "${DIR}"
-            tar -C "${DIR}" -xf "${f}"
-            LAYER=$(jq -r '.[0].Layers[0]' "${DIR}/manifest.json")
-            mv -f "${DIR}/${LAYER}" "./${DIR}.tar"
-            rm -rf "${DIR}" "${f}"*
+
+          FILES=(
+            downloaded/OpenCCU-${{ needs.prepare.outputs.build_version }}-oci_*.tgz
+          )
+
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No OCI tgz artifacts found."
+            find downloaded -maxdepth 2 -type f -print || true
+            exit 1
+          fi
+
+          for f in "${FILES[@]}"; do
+            echo "Processing ${f}"
+
+            BASENAME="$(basename "${f}" .tgz)"
+            TMPDIR="$(mktemp -d)"
+
+            tar -C "${TMPDIR}" -xf "${f}"
+
+            if [[ ! -f "${TMPDIR}/manifest.json" ]]; then
+              echo "manifest.json not found in ${f}"
+              find "${TMPDIR}" -maxdepth 2 -type f -print
+              exit 1
+            fi
+
+            LAYER="$(jq -r '.[0].Layers[0]' "${TMPDIR}/manifest.json")"
+
+            if [[ -z "${LAYER}" || "${LAYER}" == "null" ]]; then
+              echo "Could not determine OCI layer from ${f}"
+              exit 1
+            fi
+
+            if [[ ! -f "${TMPDIR}/${LAYER}" ]]; then
+              echo "Layer ${LAYER} not found in ${f}"
+              exit 1
+            fi
+
+            mv \
+              "${TMPDIR}/${LAYER}" \
+              "oci_build/${BASENAME}.tar"
+
+            rm -rf "${TMPDIR}"
           done
 
-      - name: Build OCI tags
+          echo "OCI build directory:"
+          ls -lah oci_build
+
+      #######################################################################
+      # Generate GHCR tags
+      #######################################################################
+      - name: Generate Container Tags
+        id: tags
         shell: bash
         run: |
-          BASE_TAG="ghcr.io/${GITHUB_REPOSITORY@L}"
-          UNIQUE_TAG="${BASE_TAG}:${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}"
-          if [[ ${GITHUB_EVENT_NAME} == 'schedule' || ${GITHUB_EVENT_NAME} == 'workflow_dispatch' ]]; then
-            BRANCH="${GITHUB_REF##*/}"
-            if [[ ${BRANCH} == 'master' ]]; then
-              BRANCH_TAG="${BASE_TAG}:snapshot"
-            else
-              BRANCH_TAG="${BASE_TAG}:snapshot-${BRANCH}"
-            fi
-          fi
-          echo "base_tag=${BASE_TAG}" >> $GITHUB_OUTPUT
-          echo "unique_tag=${UNIQUE_TAG}" >> $GITHUB_OUTPUT
-          echo "branch_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
-        id: extract_branch
+          REPOSITORY="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          BASE_TAG="ghcr.io/${REPOSITORY}"
 
+          BRANCH="${GITHUB_REF_NAME}"
+
+          # Docker tags cannot safely contain arbitrary branch characters.
+          BRANCH_SAFE="$(
+            echo "${BRANCH}" \
+              | sed 's#[^A-Za-z0-9_.-]#-#g'
+          )"
+
+          UNIQUE_TAG="${BASE_TAG}:${{ needs.prepare.outputs.build_version }}-${{ needs.prepare.outputs.sha7 }}"
+          BRANCH_TAG="${BASE_TAG}:snapshot-${BRANCH_SAFE}"
+
+          echo "base_tag=${BASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "unique_tag=${UNIQUE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "branch_tag=${BRANCH_TAG}" >> "$GITHUB_OUTPUT"
+
+          echo "BASE_TAG=${BASE_TAG}"
+          echo "UNIQUE_TAG=${UNIQUE_TAG}"
+          echo "BRANCH_TAG=${BRANCH_TAG}"
+
+      #######################################################################
+      # Buildx
+      #######################################################################
       - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e  # v4.3.0
-        with:
-          use: true
+        uses: docker/setup-buildx-action@v3
 
+      #######################################################################
+      # Login to GHCR
+      #
+      # No CR_PAT is needed for this repository workflow.
+      #######################################################################
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.CR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract docker metadata
+      #######################################################################
+      # Metadata
+      #######################################################################
+      - name: Extract Docker Metadata
         id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        uses: docker/metadata-action@v5
         with:
-          images: ${{ steps.extract_branch.outputs.base_tag }}
+          images: ${{ steps.tags.outputs.base_tag }}
           labels: |
             maintainer=OpenCCU OpenSource Team
             org.opencontainers.image.title=OpenCCU
-            org.opencontainers.image.description=Alternative OS for your homematicIP CCU
+            org.opencontainers.image.description=Alternative OS for your Homematic/Homematic IP CCU
             org.opencontainers.image.vendor=OpenCCU OpenSource Project
-            org.opencontainers.image.authors=OpenCCU OpenSource Team
             org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.url=https://openccu.de
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/wiki
-            org.opencontainers.image.created=${{ env.BUILD_DATETIME }}
-            org.opencontainers.image.ref.name=${{ env.GIT_REF }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.build_version }}-${{ needs.prepare.outputs.sha7 }}
             io.hass.name=OpenCCU
-            io.hass.description=HomeMatic/homematicIP CCU central based on OpenCCU
-            io.hass.url=https://github.com/${{ github.repository }}/tree/master/home-assistant-addon
-            io.hass.version=${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}
             io.hass.type=addon
             io.hass.arch=aarch64|amd64
-          annotations: |
-            maintainer=OpenCCU OpenSource Team
-            org.opencontainers.image.title=OpenCCU
-            org.opencontainers.image.description=Alternative OS for your homematicIP CCU
-            org.opencontainers.image.vendor=OpenCCU OpenSource Project
-            org.opencontainers.image.authors=OpenCCU OpenSource Team
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.url=https://openccu.de
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/wiki
-            org.opencontainers.image.created=${{ env.BUILD_DATETIME }}
-            org.opencontainers.image.ref.name=${{ env.GIT_REF }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}
-            io.hass.name=OpenCCU
-            io.hass.description=HomeMatic/homematicIP CCU central based on OpenCCU
-            io.hass.url=https://github.com/${{ github.repository }}/tree/master/home-assistant-addon
-            io.hass.version=${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}
-            io.hass.type=addon
-            io.hass.arch=aarch64|amd64
-        env:
-          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
 
-      - name: Build and push container image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+      #######################################################################
+      # Multi-architecture container
+      #######################################################################
+      - name: Build and Push Container Image
         id: docker_build
+        uses: docker/build-push-action@v6
         with:
           context: oci_build
           file: buildroot-external/board/oci/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            tar_prefix=OpenCCU-${{ env.BUILD_VERSION }}-oci_
-          labels: |
-            ${{ steps.meta.outputs.labels }}
+            tar_prefix=OpenCCU-${{ needs.prepare.outputs.build_version }}-oci_
+          labels: ${{ steps.meta.outputs.labels }}
           tags: |
-            ${{ steps.extract_branch.outputs.unique_tag }}
-            ${{ steps.extract_branch.outputs.branch_tag }}
-          annotations: |
-            ${{ steps.meta.outputs.annotations }}
+            ${{ steps.tags.outputs.unique_tag }}
+            ${{ steps.tags.outputs.branch_tag }}
 
-      - name: Container image digest
-        run: echo ${{ steps.docker_build.outputs.digest }}
+      #######################################################################
+      # Result
+      #######################################################################
+      - name: Container Image Result
+        shell: bash
+        run: |
+          echo "Digest:"
+          echo "${{ steps.docker_build.outputs.digest }}"
 
-      - name: Attest container provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4
-        id: attest
+          echo
+          echo "Tags:"
+          echo "${{ steps.tags.outputs.unique_tag }}"
+          echo "${{ steps.tags.outputs.branch_tag }}"
+
+      #######################################################################
+      # Provenance
+      #######################################################################
+      - name: Attest Container Provenance
+        uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ steps.extract_branch.outputs.base_tag }}
+          subject-name: ${{ steps.tags.outputs.base_tag }}
           subject-digest: ${{ steps.docker_build.outputs.digest }}
           push-to-registry: true
-
-      - name: Cleanup oci_build dir
-        run: |
-          rm -rf oci_build
-
-  helm:
-    permissions:
-      contents: write  # stefanprodan/helm-gh-pages
-    name: Build K8s Helm chart
-    runs-on: ubuntu-24.04
-    needs: [build, oci-multiarch-build-push]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Setup Environment
-        id: env
-        run: |
-          echo "GITHUB_SHA7=$(echo ${GITHUB_SHA::7})" >> $GITHUB_ENV
-
-      - name: Publish Helm chart
-        uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260  # v1.7.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          charts_dir: helm
-          chart_version: 0.1  # Latest snapshot
-          app_version: ${{ needs.build.outputs.build_version }}-${{ env.GITHUB_SHA7 }}
-
-  ##########################################
-  # Publish new version to public
-  publish-build:
-    permissions:
-      contents: write  # github-actions[bot] repo write access
-    name: Publish build
-    runs-on: ubuntu-24.04
-    needs: [build, oci-multiarch-build-push]
-    if: github.event_name != 'pull_request'
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: master
-          persist-credentials: true
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
-          fetch-depth: 0
-
-      - name: Setup Environment
-        run: |
-          echo "BUILD_VERSION=${{ needs.build.outputs.build_version }}" >> $GITHUB_ENV
-          echo "GITHUB_SHA7=$(echo ${GITHUB_SHA::7})" >> $GITHUB_ENV
-
-      - name: Bump HomeAssistant add-on version
-        run: |
-          VERSION=${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}
-          sed -i "s/^\(version:\)\(.*\)/\1 ${VERSION}/" home-assistant-addon-dev/config.yaml
-
-      # download rpi manifest files
-      - name: Download rpi3 manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-        with:
-          name: OpenCCU-${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}-rpi3.mf
-      - name: Download rpi4 manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-        with:
-          name: OpenCCU-${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}-rpi4.mf
-      - name: Download rpi5 manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-        with:
-          name: OpenCCU-${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}-rpi5.mf
-
-      - name: Bump rpi-imager version
-        run: |
-          release/rpi-imager-update.sh release/rpi-imager-dev.json \
-            OpenCCU-${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}-rpi3.mf \
-            OpenCCU-${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}-rpi4.mf \
-            OpenCCU-${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}-rpi5.mf
-
-      - name: Commit changes
-        run: |
-          git config user.name "github-actions"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash
-          git diff --quiet || git commit -a -m "snapshot bump [${{ env.BUILD_VERSION }}-${{ env.GITHUB_SHA7 }}]"
-          git push origin HEAD:master
-
-  cleanup:
-    permissions:
-      contents: write  # c-hive/gha-remove-artifacts
-      actions: write  # c-hive/gha-remove-artifacts
-    name: Cleanup artifacts/packages
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Remove old artifacts
-        uses: c-hive/gha-remove-artifacts@44fc7acaf1b3d0987da0e8d4707a989d80e9554b  # v1.4.0
-        with:
-          age: '2 months'
-          skip-tags: true
-          skip-recent: 15
-        continue-on-error: true
-
-      - name: Remove old unused container images
-        uses: snok/container-retention-policy@d3bdcf5ce9b05f685154e4a16c39233b245e3d53  # v3.1.0
-        with:
-          account: user
-          token: ${{ secrets.CR_PAT }}
-          cut-off: 4w
-          image-names: openccu
-          image-tags: "*-???????"
-          tag-selection: tagged
-          keep-n-most-recent: 5
-          timestamp-to-use: created_at
-          dry-run: true
-        continue-on-error: true
